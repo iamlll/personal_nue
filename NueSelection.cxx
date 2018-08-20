@@ -7,6 +7,7 @@
 #include "gallery/ValidHandle.h"
 #include "canvas/Utilities/InputTag.h"
 #include "nusimdata/SimulationBase/MCTruth.h"
+#include "nusimdata/SimulationBase/MCFlux.h"
 #include "nusimdata/SimulationBase/MCNeutrino.h"
 #include "core/Event.hh"
 #include "NueSelection.h"
@@ -128,6 +129,8 @@ void NueSelection::Initialize(Json::Value* config) {
   fCut1_reco = InitializeHists(30,0,5,3,"nue1",rng, true);
   cut1stack_reco = new THStack("cut1stack_reco", "Cut 1 with reco E_#nu;Reconstructed E_#nu (GeV);count");
 
+  fig11 = InitializeHists(30,0,5, 5,"thing", rng, true);
+  fig11stack = new THStack("fig11stack",";Reconstructed Energy (GeV);Events/GeV");
 
   E_gamma = InitializeHists(30,0,500,5,"#gamma", rng, false); //0 is all photons; 1 is all primary photons; 2 is all primary photons with >200 MeV; 3 is all secondary photons; 4 is all secondary photons with >100 MeV.
   gammaStack = new THStack("gammaStack", "Photon energies;E_#gamma (MeV);count");
@@ -212,17 +215,41 @@ std::vector<sim::MCShower> FindRelevantShowers(TLorentzVector nuVertex, std::vec
       auto const& mcshower = mcshowers.at(s);
       if(FindDistance(mcshower.Start().Position(),nuVertex)<=5){
         //shower associated with neutrino interaction
-        showerE[0]->Fill(mcshower.Start().E(),1); 
         relShowers.push_back(mcshower);
       }
-      else showerE[1]->Fill(mcshower.Start().E(),1);
     }
     return relShowers;
   }
 
+int LinkShower_HadronParent(simb::MCFlux mcflux, simb::MCTruth mctruth, sim::MCShower mcshower){
+  int parent = 0;
+  if(mctruth.GetNeutrino().Lepton().PdgCode()==mcshower.PdgCode()){
+    if(mctruth.GetNeutrino().Lepton().Position().Vect()==mcshower.Start().Position().Vect()){
+      parent = mcflux.fptype;
+    }
+  }
+  return parent;
+}
+
 /**
- *  * nu_e CC CUT 1 IMPLEMENTATION: nu_e CC signal, 80% efficiency
- *   */
+ * Find active track length (track length w/in fid vol) of the track
+ */
+double ActiveTrackLength(sim::MCTrack mctrack){
+  double tracklength = 0.0;
+  for(size_t i=0; i<mctrack.size();i++){
+    sim::MCStep& step = mctrack[i];
+    if(i>0){
+      if(AnybodyHome_SBND(step.Position())==true && AnybodyHome_SBND(mctrack[i-1].Position())==true){
+        tracklength += FindDistance(step.Position(),mctrack[i-1].Position());
+      }
+    }
+  }
+  return tracklength;
+}
+
+/**
+ * nu_e CC CUT 1 IMPLEMENTATION: nu_e CC signal, 80% efficiency
+ */
 void Cut1(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks,std::vector<sim::MCShower> fRelShowers, std::vector<TH1D*> fCut1, std::mt19937 rng){
   std::uniform_int_distribution<std::mt19937::result_type> dist100(0,99); //distribution in range [0, 99]
   auto CCNC = mctruth.GetNeutrino().CCNC();
@@ -254,7 +281,7 @@ void Cut1(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks,std::vecto
   }
 }
 
-Cut1_reco(simb::MCFlux mcflux, simb::MCTruth mctruth, std::vector<sim::MCShower> mcshowers, std::vector<TH1D*> fCut1, std::vector<TH1D*> fig11, std::mt19937 rng){
+void Cut1_reco(simb::MCFlux mcflux, simb::MCTruth mctruth, std::vector<sim::MCShower> mcshowers, std::vector<TH1D*> fCut1, std::vector<TH1D*> fig11, std::mt19937 rng){
   std::uniform_int_distribution<std::mt19937::result_type> dist100(0,99); //distribution in range [0, 99]
   int shcount = 0; 
   int ecount = 0;
@@ -350,7 +377,6 @@ void Cut2(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks, std::vect
       hadronE += anarG;
     }
   }
-  E_hadron->Fill(nuE, hadronE/1000, 1);  
   if(hadronE > 50){
     visible = true;
   }
@@ -394,9 +420,9 @@ void Cut2(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks, std::vect
 } 
 
 /**
- *  * nu_e CC CUT 3 IMPLEMENTATION
- *   */
-void Cut3nue(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks, std::vector<sim::MCShower> fRelShowers, std::vector<TH1D*> hists, std::vector<TH1D*> fig11, std::mt19937 rng){
+ * nu_e CC CUT 3 IMPLEMENTATION
+ */
+void Cut3(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks, std::vector<sim::MCShower> fRelShowers, std::vector<TH1D*> hists, std::vector<TH1D*> fig11, std::mt19937 rng){
   if(mctruth.GetNeutrino().Nu().PdgCode()==14 && mctruth.GetNeutrino().CCNC()==0){
     for(size_t t=0; t<fRelTracks.size();t++){
       auto const& mctrack = fRelTracks.at(t);
@@ -478,7 +504,6 @@ void NueSelection::Finalize() {
   WriteHists(fCut3, cut3stack);
   WriteHists(E_gamma, gammaStack);
   WriteHists(fig11, fig11stack);
-  WriteHists(E_gamma, gammaStack);
   dEdx->Write();
   WriteHists(dEdx_2, dEdx_2_stack);
 }
@@ -494,6 +519,7 @@ bool NueSelection::ProcessEvent(const gallery::Event& ev, std::vector<Event::Int
   // Grab a data product from the event
   auto const& mctruths = \
     *ev.getValidHandle<std::vector<simb::MCTruth> >(fTruthTag);
+  auto const& mcfluxes = *ev.getValidHandle<std::vector<simb::MCFlux>>(fTruthTag);
   auto const& mctracks = \
     *ev.getValidHandle<std::vector<sim::MCTrack>>(fTrackTag);
   auto const& mcshowers = \
@@ -503,6 +529,7 @@ bool NueSelection::ProcessEvent(const gallery::Event& ev, std::vector<Event::Int
   for (size_t i=0; i<mctruths.size(); i++) {
     Event::Interaction interaction;
     auto const& mctruth = mctruths.at(i);
+    auto const& mcflux = mcfluxes.at(i);
     const simb::MCNeutrino& nu = mctruth.GetNeutrino();
     auto nuenergy = nu.Nu().E();
     auto nuVertex = nu.Nu().EndPosition();
@@ -516,10 +543,10 @@ bool NueSelection::ProcessEvent(const gallery::Event& ev, std::vector<Event::Int
     fRelTracks = FindRelevantTracks(nuVertex, mctracks);
     fRelShowers = FindRelevantShowers(nuVertex, mcshowers);
   
-    Cut1nue(mctruth, fRelTracks, fRelShowers, fCut1, rng);
-    //Cut1nue_reco(mcflux, mctruth, mcshowers, fCut1_reco, fig11, rng);
-    //Cut2nue(mctruth, fRelTracks, fRelShowers, fCut2, fig11, rng);
-    //Cut3nue(mctruth, fRelTracks, fRelShowers, fCut3, fig11, rng);
+    Cut1(mctruth, fRelTracks, fRelShowers, fCut1, rng);
+    Cut1_reco(mcflux, mctruth, mcshowers, fCut1_reco, fig11, rng);
+    Cut2(mctruth, fRelTracks, fRelShowers, fCut2, fig11, rng);
+    Cut3(mctruth, fRelTracks, fRelShowers, fCut3, fig11, rng);
   }
 
   bool selected = !reco.empty();

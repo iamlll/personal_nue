@@ -65,6 +65,10 @@ protected:
   art::InputTag fTrackTag; //MCTrack
   art::InputTag fShowerTag;//MCShower
 
+  /** vectors **/
+  std::vector<sim::MCTrack> fRelTracks; //MCTracks within 5 cm of neutrino interaction vertex
+  std::vector<sim::MCShower> fRelShowers; //MCShowers within 5 cm of neutrino interaction vertex
+
   /**histograms!*/
   std::vector<TH1D*> fCut1; //cuts for selection criteria nu_e CC electron with E_e > 200 MeV
   THStack* cut1stack;
@@ -76,9 +80,12 @@ protected:
   std::vector<TH1D*> fCut1_reco; //Cut 1 with reconstructed neutrino energy
   THStack* cut1stack_reco;
   std::vector<TH1D*> fig11;
-  THStack* fig11Stack;
+  THStack* fig11stack;
   std::vector<TH1D*> E_gamma; //ct vs photon shower energy
   THStack* gammaStack; 
+  TH1D* dEdx;
+  std::vector<TH1D*> dEdx_2; //differentiates b/w gamma and e- showers
+  THStack* dEdx_2_stack;
 
   }  // namespace SBNOsc
 }  // namespace ana
