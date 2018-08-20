@@ -118,19 +118,23 @@ void NueSelection::Initialize(Json::Value* config) {
   }
 
   // Make a histogram
-  prelimCuts = InitializeHists(30,0,5,5,"nu interactions",rng,false);
-  prelim_stack_nue = new THStack("prelim_stack_nue",";E_#nu (GeV);count");
+  fCut1 = InitializeHists(30, 0, 5, 3, "#nu_e CC", rng, true);  
+  cut1stack = new THStack("cut1stack", "Intrinsic/signal #nu_e CC;E_#nu (GeV);count");
+  fCut2 = InitializeHists(30,0,5,2, "events", rng, true);
+  cut2stack = new THStack("cut2stack", "NC #gamma production;E_#nu (GeV);count");
+  fCut3 = InitializeHists(30,0,5,2,"#nu_mu CC", rng, true);
+  cut3stack = new THStack("cut3stack","CC #nu_#mu;E_#nu (GeV);count");
 
-  dist_from_vertex = new TH1D("dist_from_vertex","Shower/track dist. from #nu vertex;Distance (cm);count",60,0,10);
-  vertexDist_truth = InitializeHists(60,0,10,3,"nuegc",rng,true);
-  truthVD_stack = new THStack("truthVD_stack","dist. from #nu vertex;dist(cm);count");
-  vertexDist_reco = InitializeHists(60,0,10,2,"nuegc_reco",rng,false);
-  recoVD_stack = new THStack("recoVD_stack","dist.from #nu vertex;dist(cm);count");
+  fCut1_reco = InitializeHists(30,0,5,3,"nue1",rng, true);
+  cut1stack_reco = new THStack("cut1stack_reco", "Cut 1 with reco E_#nu;Reconstructed E_#nu (GeV);count");
 
-  nuE_vs_reco = new TH2D("nuE_vs_reco","truth v. reco E_#nu;E_#nu (GeV);Reconstructed E_#nu (GeV)", 30, 0,5,30,0,5); 
 
-  showerE = InitializeHists(60,0,1000,2,"assn",rng,false);
-  showerE_stack = new THStack("showerE_stack","Shower energies + #nu assns.;E_shower (MeV);count");
+  E_gamma = InitializeHists(30,0,500,5,"#gamma", rng, false); //0 is all photons; 1 is all primary photons; 2 is all primary photons with >200 MeV; 3 is all secondary photons; 4 is all secondary photons with >100 MeV.
+  gammaStack = new THStack("gammaStack", "Photon energies;E_#gamma (MeV);count");
+
+  dEdx = new TH1D("dEdx","Shower dE/dx;dE/dx (MeV/cm);particle count", 30, 0, 5);
+  dEdx_2 = InitializeHists(30,0,5,2,"particle",rng, true);
+  dEdx_2_stack = new THStack("showerStack","Shower dE/dx;dE/dx(MeV/cm);count");
 
   hello();
 }
@@ -188,6 +192,19 @@ double FindRecoEnergy_numu(sim::MCTrack mctrack){
   return reco_energy;
 }
 
+std::vector<sim::MCTrack> FindRelevantTracks(TLorentzVector nuVertex, std::vector<sim::MCTrack> mctracks){
+  std::vector<sim::MCTrack> relTracks;
+  //iterate through only each neutrino's "associated" tracks + showers (within 5 cm of neutrino interaction vertex)
+  //(we're cheating - it's okay)
+  for(size_t r=0;r<mctracks.size();r++){
+    auto const& mctrack = mctracks.at(r);
+    if(FindDistance(mctrack.Start().Position(),nuVertex)<=5){
+      relTracks.push_back(mctrack);
+    }
+  }
+  return relTracks;
+}
+
 std::vector<sim::MCShower> FindRelevantShowers(TLorentzVector nuVertex, std::vector<sim::MCShower> mcshowers){
   std::vector<sim::MCShower> relShowers;
   //iterate through only each neutrino's "associated" tracks + showers (within 5 cm of neutrino interaction vertex)
@@ -203,92 +220,267 @@ std::vector<sim::MCShower> FindRelevantShowers(TLorentzVector nuVertex, std::vec
     return relShowers;
   }
 
-void PrelimCuts_nue(double nuenergy, TLorentzVector nuVertex, int nuPdg, int ccnc, std::vector<sim::MCShower> mcshowers, std::vector<sim::MCTrack> mctracks, TH2D* nuE_vs_reco, std::vector<TH1D*> prelimCuts){
-  //make a table!
-  prelimCuts[0]->Fill(nuenergy,1); //total interactions generated
-  //# interactions in fiducial volume
-  if(AnybodyHome_SBND(nuVertex)==true){
-    prelimCuts[1]->Fill(nuenergy,1); 
-    //# true nu_e CC  
-    if(nuPdg==12 && ccnc==0){
-      prelimCuts[2]->Fill(nuenergy,1);
-      //# nu_e CC interactions with a matched shower, E_shower > 200 MeV
-      //if the nu_e interaction has at least one matched shower  
-      int nMatched = 0;
-      int primE = 0;
-      for(size_t s=0; s<mcshowers.size();s++){
-        auto mcshower = mcshowers.at(s); 
-        if(FindDistance(nuVertex,mcshower.Start().Position()) <= 5){
-          if(mcshower.Start().E() >= 200){  
-            nMatched++;
-            //efficiency: what fraction of nu_e CC events are accurately defined
-            //by my definition of a "signal event" (have a shower w/in 5
-            //cm, energy above 200 MeV)?    
-            if(nMatched == 1){ 
-              prelimCuts[3]->Fill(nuenergy,1);
-            }
-
-            //Purity: what fraction of my "signals" (nu_e CC with E_shower > 200 MeV) are "true" signal events, i.e. primary electron showers? 
-            if(mcshower.PdgCode()==11 && mcshower.Process()=="primary"){
-              if(primE==0) prelimCuts[4]->Fill(nuenergy,1);
-              primE++;
-            }
+/**
+ *  * nu_e CC CUT 1 IMPLEMENTATION: nu_e CC signal, 80% efficiency
+ *   */
+void Cut1(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks,std::vector<sim::MCShower> fRelShowers, std::vector<TH1D*> fCut1, std::mt19937 rng){
+  std::uniform_int_distribution<std::mt19937::result_type> dist100(0,99); //distribution in range [0, 99]
+  auto CCNC = mctruth.GetNeutrino().CCNC();
+  auto energy = mctruth.GetNeutrino().Nu().E();
+  if(mctruth.GetNeutrino().Nu().PdgCode()==12 && CCNC==0){
+    fCut1[0]->Fill(energy,1); //nue CC interactions
+    int shcount = 0; //counts num showers abv threshold = 200 MeV
+    int ecount = 0; //counts num primary e- showers "
+    for(size_t t=0; t<fRelShowers.size();t++){
+      auto mcshower = fRelShowers.at(t);
+      //nu_e CC with E_shower > 200 MeV (my defn of signal)
+      if(mcshower.Start().E()>200){
+        shcount++;
+        if(shcount==1){
+          fCut1[1]->Fill(energy,1); //only want to fill once per event
+        }
+        //# interactions producing prim e- sh w/ E_e>200  
+        if(mcshower.PdgCode()==11 && mcshower.Process()=="primary"){
+          ecount++;
+          if(ecount==1){
+            fCut1[2]->Fill(energy,1); 
+            //implementing 80% identification efficiency
+            //if(dist100(rng)<80) fCut1[3]->Fill(energy,1); 
+            break; //done gathering info from this event!
           }
-        }  
+        }   
       }
     }
   }
 }
 
-void DistFromNuVertex(TLorentzVector nuVertex, int nuPdg, int ccnc, std::vector<sim::MCShower> mcshowers, std::vector<sim::MCTrack> mctracks, TH1D* dist_from_vertex, std::vector<TH1D*> vertexDist_truth){
-  for(size_t a=0; a<mctracks.size();a++){
-    auto mctrack = mctracks.at(a);
-    auto dist = FindDistance(mctrack.Start().Position(), nuVertex);
-    dist_from_vertex->Fill(dist, 1);
-    //if(mctrack.PdgCode()==2212) std::cout << "Proton process: " << mctrack.Process() << std::endl;
-  }
-
-  for(size_t b=0; b<mcshowers.size();b++){
-    auto mcshower = mcshowers.at(b);
-    auto dist = FindDistance(mcshower.Start().Position(), nuVertex);
-    dist_from_vertex->Fill(dist, 1);
-    if(nuPdg==12 && ccnc==0 && mcshower.PdgCode()==11 && mcshower.Process()=="primary"){
-      vertexDist_truth[0]->Fill(dist,1); //true nu_e CCNC
-    }
-    if(mcshower.PdgCode()==22){
-      vertexDist_truth[1]->Fill(dist,1); //gamma showers
-    }
-    if(mcshower.PdgCode()!=22 && (mcshower.PdgCode()==2212 || mcshower.PdgCode()==11) && mcshower.Process()!="primary"){
-      vertexDist_truth[2]->Fill(dist,1); //cosmic rays = everything else
+Cut1_reco(simb::MCFlux mcflux, simb::MCTruth mctruth, std::vector<sim::MCShower> mcshowers, std::vector<TH1D*> fCut1, std::vector<TH1D*> fig11, std::mt19937 rng){
+  std::uniform_int_distribution<std::mt19937::result_type> dist100(0,99); //distribution in range [0, 99]
+  int shcount = 0; 
+  int ecount = 0;
+  for(size_t i=0;i<mcshowers.size();i++){
+    auto mcshower = mcshowers.at(i);
+    auto energy = FindRecoEnergy_nue(mcshower);
+    //all events w/ at least 1 matched shower above 200 MeV
+    if(mcshower.Start().E() > 200){
+      shcount++;
+      if(shcount==1) fCut1[0]->Fill(energy,1);
+      //# events w/ e- sh abv threshold
+      if(mcshower.PdgCode()==11 && mcshower.Process()=="primary"){
+        ecount++;
+        if(ecount==1){
+          fCut1[1]->Fill(energy,1);
+          if(dist100(rng)<80){
+            //implementing ID efficiency
+            //fCut1[3]->Fill(energy, 1);
+          }
+          //muon parent
+          if(LinkShower_HadronParent(mcflux,mctruth,mcshower)==13) fig11[0]->Fill(energy, 1);
+          //K0 parent
+          if(LinkShower_HadronParent(mcflux,mctruth,mcshower)==130 || LinkShower_HadronParent(mcflux,mctruth,mcshower)==310 || LinkShower_HadronParent(mcflux,mctruth,mcshower)==311) fig11[1]->Fill(energy, 1);
+          //K+ parent 
+          if(LinkShower_HadronParent(mcflux,mctruth,mcshower)==321){
+            fig11[2]->Fill(energy, 1);
+          }
+        }
+      } 
     }
   }
 }
 
-void NuE_vs_RecoE(double nuenergy, TLorentzVector nuVertex, std::vector<sim::MCShower> mcshowers, std::vector<sim::MCTrack> mctracks){
-  for(size_t a=0; a<mctracks.size();a++){
-    auto mctrack = mctracks.at(a);
-    if(mctrack.PdgCode()==13){
-      auto reco = FindRecoEnergy_numu(mctrack);
-      nuE_vs_reco->Fill(nuenergy, reco, 1);
+/**
+ * nu_e CC CUT 2 IMPLEMENTATION: NC photon production
+ */
+void Cut2(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks, std::vector<sim::MCShower> fRelShowers, std::vector<TH1D*> hists, std::vector<TH1D*> fig11, std::mt19937 rng){
+  std::uniform_int_distribution<std::mt19937::result_type> dist100(0,99); //distribution in range [0, 99]
+  auto nuE = mctruth.GetNeutrino().Nu().E();
+  auto nuVertex = mctruth.GetNeutrino().Nu().EndPosition(); 
+  int count = 0; //count the number of photon showers produced by daughter pi0 decay (that pass the energy cut)
+  double hadronE = 0.0; //total charged hadronic activity produced at nu vertex
+  bool visible = false; //neutrino has "visible" interaction vertex if hadronE > 50 MeV at vertex
+  bool reject = false; //does the neutrino interaction event pass the cuts?
+  //keep events with photon showers above 200 MeV
+
+  int nKids=0; //number of kids
+  int momID;
+  for(size_t n=0;n<fRelShowers.size();n++){
+    auto const& mcshower = fRelShowers.at(n);
+    dEdx->Fill(mcshower.dEdx(),1);
+    
+    if(mcshower.PdgCode()==22){
+      E_gamma[0]->Fill(mcshower.Start().E(),1); //all photon showers
+      dEdx_2[0]->Fill(mcshower.dEdx(),1);
+    }
+    if(mcshower.PdgCode()==11) dEdx_2[1]->Fill(mcshower.dEdx(),1);
+
+    //leading photon shower produced by pi0 must have E_gamma > 200 MeV; 2nd photon shower must have E_gamma > 100 MeV
+    if(mcshower.PdgCode()==22 && mcshower.MotherPdgCode()==111 && mcshower.MotherProcess()=="primary"){
+      if(nKids==0){
+        E_gamma[1]->Fill(mcshower.Start().E(),1); //# leading photon showers
+        momID = mcshower.MotherTrackID(); //parent track ID of the first photon child
+        if(mcshower.Start().E() > 200){
+          E_gamma[2]->Fill(mcshower.Start().E(), 1); //# primary g-showers that pass the energy cut
+          count++;
+        }
+        nKids++;
+      }      
+      else if(nKids==1){
+        if(mcshower.MotherTrackID()==momID){
+          E_gamma[3]->Fill(mcshower.Start().E(),1); //# 2nd photon showers
+          if(count==1 && mcshower.Start().E() > 100){//if leading photon shower pass the energy cut
+            E_gamma[4]->Fill(mcshower.Start().E(), 1); //#2nd g-kids that pass the energy cut
+            count++;
+            //if the second photon converts (showers) within the active TPC, reject the event!
+            if(AnybodyHome_SBND(mcshower.Start().Position())==true){
+              reject=true;
+              break; 
+            } 
+          }
+        }
+      }
     }
   }
 
-  for(size_t b=0; b<mcshowers.size();b++){
-    auto mcshower = mcshowers.at(b);
-    if(mcshower.PdgCode()==11){
-      auto reco = FindRecoEnergy_nue(mcshower);
-      nuE_vs_reco->Fill(nuenergy, reco, 1);
+  for(size_t r=0;r<fRelTracks.size();r++){
+    auto const& mctrack = fRelTracks.at(r);
+    //nu_e CC SELECTION CUT 2B
+    //Look for charged hadron primary particles, i.e. NOT leptons, protons, pi0, or K0. Find energy total (>50 MeV to be visible)
+    if(mctrack.PdgCode()!=11 && mctrack.PdgCode()!=13 && mctrack.PdgCode()!=15 && mctrack.PdgCode()!=111 && mctrack.PdgCode()!=130 && mctrack.PdgCode()!= 310 && mctrack.PdgCode()!=311 && mctrack.Process()=="primary"){
+      double anarG = mctrack.Start().E(); //in MeV
+      hadronE += anarG;
     }
+  }
+  E_hadron->Fill(nuE, hadronE/1000, 1);  
+  if(hadronE > 50){
+    visible = true;
+  }
+  int nPhotonSh = 0; //total num of photon showers in the nu interaction
+  int nfailed = 0; //num of photon showers that converted >3cm from vertex
+  if(visible==true){
+    for(size_t sh=0; sh<fRelShowers.size();sh++){
+      auto const& mcshower = fRelShowers.at(sh);
+      auto dist_from_vertex = FindDistance(mcshower.Start().Position(), nuVertex);
+      if(mcshower.PdgCode()==22){
+        nPhotonSh++;
+        if(dist_from_vertex > 3){
+          nfailed++; 
+        } 
+      } 
+    }
+    if(nfailed == nPhotonSh){
+      reject=true; 
+    }
+  } 
+  //96% photon rejection rate from dE/dx cut - have to loop back thru all relevant showers
+  if(reject==false){
+    for(size_t sh=0; sh<fRelShowers.size();sh++){
+      auto const& mcshower = fRelShowers.at(sh);
+      if(mcshower.PdgCode()==22){
+        if(mcshower.dEdx()<1.6){
+          hists[1]->Fill(nuE,1);
+          fig11[3]->Fill(FindRecoEnergy_nue(mcshower),1);
+        }
+        else hists[0]->Fill(nuE,1);
+      }
+    }  
+  }
+  //if rejecting event, add all photons to "failed" hist
+  else{
+    for(size_t sh=0; sh<fRelShowers.size();sh++){
+      auto const& mcshower = fRelShowers.at(sh);
+      if(mcshower.PdgCode()==22) hists[0]->Fill(nuE, 1);  
+    }
+  } 
+} 
+
+/**
+ *  * nu_e CC CUT 3 IMPLEMENTATION
+ *   */
+void Cut3nue(simb::MCTruth mctruth, std::vector<sim::MCTrack> fRelTracks, std::vector<sim::MCShower> fRelShowers, std::vector<TH1D*> hists, std::vector<TH1D*> fig11, std::mt19937 rng){
+  if(mctruth.GetNeutrino().Nu().PdgCode()==14 && mctruth.GetNeutrino().CCNC()==0){
+    for(size_t t=0; t<fRelTracks.size();t++){
+      auto const& mctrack = fRelTracks.at(t);
+      if(mctrack.PdgCode()==13){
+        //if visible track length > 1 m or track exits (cannot tell what total track length is), then cut
+        if(ActiveTrackLength(mctrack)>=100 || AnybodyHome_SBND(mctrack.End().Position())==false){
+          hists[0]->Fill(mctruth.GetNeutrino().Nu().E(),1);  
+        }
+        else{
+          int ct=0; //counts how many primary showers are associated w/ vertex
+          for(size_t s=0; s<fRelShowers.size();s++){
+            auto const& mcshower = fRelShowers.at(s);
+            ct++;
+          }
+          //if only one shower associated with the CC event vertex 
+          if(ct==1){
+            //run Cut 2 photon selection criteria, events that are not rejected are retained as BG for nu_e CC sample.
+            //I guess only cuts 2+3 (dEdx and produced charged hadron activity) are relevant?
+            bool reject = false; 
+            bool visible = false;
+            double hadronE = 0.0;
+            for(size_t r=0;r<fRelTracks.size();r++){
+              auto const& track = fRelTracks.at(r);
+              if(track.PdgCode()!=11 && track.PdgCode()!=13 && track.PdgCode()!=15 && track.PdgCode()!=111 && track.PdgCode()!=130 && track.PdgCode()!= 310 && track.PdgCode()!=311 && track.Process()=="primary"){
+                double anarG = track.Start().E(); //in MeV
+                hadronE += anarG;
+              }
+            }
+            if(hadronE > 50){
+              visible = true;
+            }
+            int nPhotonSh = 0; //total num of photon showers in the nu interaction
+            int nfailed = 0; //num of photon showers that converted >3cm from vertex
+            if(visible==true){
+              for(size_t sh=0; sh<fRelShowers.size();sh++){
+              auto const& mcshower = fRelShowers.at(sh);
+              auto dist_from_vertex = FindDistance(mcshower.Start().Position(), mctruth.GetNeutrino().Nu().EndPosition());
+                if(mcshower.PdgCode()==22){
+                  nPhotonSh++;
+                  if(dist_from_vertex > 3){
+                    nfailed++; 
+                  }  
+                } 
+              }
+              if(nfailed == nPhotonSh){
+              reject=true; 
+              }
+            }        
+            if(reject==false){
+              for(size_t sh=0; sh<fRelShowers.size();sh++){
+                auto const& mcshower = fRelShowers.at(sh);
+                if(mcshower.PdgCode()==22){
+                  if(mcshower.dEdx()<1.6){
+                    hists[1]->Fill(mctruth.GetNeutrino().Nu().E(),1);
+                    fig11[4]->Fill(FindRecoEnergy_nue(mcshower),1);
+                  }
+                  else hists[0]->Fill(mctruth.GetNeutrino().Nu().E(),1);
+                }
+              }  
+            }
+            //if rejecting event, add all photons to "failed" hist
+            else{
+              for(size_t sh=0; sh<fRelShowers.size();sh++){
+              auto const& mcshower = fRelShowers.at(sh);
+              if(mcshower.PdgCode()==22) hists[0]->Fill(mctruth.GetNeutrino().Nu().E(), 1);  
+              }
+            }    
+          }
+        }
+      }
+    } 
   }
 }
 
 void NueSelection::Finalize() {
   fOutputFile->cd();
-  WriteHists(prelimCuts, prelim_stack_nue);
-  dist_from_vertex->Write();
-  WriteHists(vertexDist_truth, truthVD_stack);
-  nuE_vs_reco->Write();
-  WriteHists(showerE, showerE_stack); 
+  WriteHists(fCut1, cut1stack);
+  WriteHists(fCut2, cut2stack); 
+  WriteHists(fCut3, cut3stack);
+  WriteHists(E_gamma, gammaStack);
+  WriteHists(fig11, fig11stack);
+  WriteHists(E_gamma, gammaStack);
+  dEdx->Write();
+  WriteHists(dEdx_2, dEdx_2_stack);
 }
 
 bool NueSelection::ProcessEvent(const gallery::Event& ev, std::vector<Event::Interaction>& reco) {
@@ -321,10 +513,13 @@ bool NueSelection::ProcessEvent(const gallery::Event& ev, std::vector<Event::Int
       reco.push_back(interaction);
     }
 
-    FindRelevantShowers(nuVertex, mcshowers);
-    PrelimCuts_nue(nuenergy, nuVertex, nuPdg, ccnc, mcshowers, mctracks, nuE_vs_reco, prelimCuts);    
-    DistFromNuVertex(nuVertex, nuPdg, ccnc, mcshowers, mctracks, dist_from_vertex, vertexDist_truth);
-    NuE_vs_RecoE(nuenergy, nuVertex, mcshowers, mctracks);  
+    fRelTracks = FindRelevantTracks(nuVertex, mctracks);
+    fRelShowers = FindRelevantShowers(nuVertex, mcshowers);
+  
+    Cut1nue(mctruth, fRelTracks, fRelShowers, fCut1, rng);
+    //Cut1nue_reco(mcflux, mctruth, mcshowers, fCut1_reco, fig11, rng);
+    //Cut2nue(mctruth, fRelTracks, fRelShowers, fCut2, fig11, rng);
+    //Cut3nue(mctruth, fRelTracks, fRelShowers, fCut3, fig11, rng);
   }
 
   bool selected = !reco.empty();

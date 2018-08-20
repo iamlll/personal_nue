@@ -66,19 +66,19 @@ protected:
   art::InputTag fShowerTag;//MCShower
 
   /**histograms!*/
-  std::vector<TH1D*> prelimCuts;
-  THStack* prelim_stack_nue;
+  std::vector<TH1D*> fCut1; //cuts for selection criteria nu_e CC electron with E_e > 200 MeV
+  THStack* cut1stack;
+  std::vector<TH1D*> fCut2;
+  THStack* cut2stack;
+  std::vector<TH1D*> fCut3;
+  THStack* cut3stack;
 
-  TH1D* dist_from_vertex;
-  std::vector<TH1D*> vertexDist_truth;
-  THStack* truthVD_stack;
-  std::vector<TH1D*> vertexDist_reco;
-  THStack* recoVD_stack;
-
-  TH2D* nuE_vs_reco;
-
-  std::vector<TH1D*> showerE;
-  THStack* showerE_stack;
+  std::vector<TH1D*> fCut1_reco; //Cut 1 with reconstructed neutrino energy
+  THStack* cut1stack_reco;
+  std::vector<TH1D*> fig11;
+  THStack* fig11Stack;
+  std::vector<TH1D*> E_gamma; //ct vs photon shower energy
+  THStack* gammaStack; 
 
   }  // namespace SBNOsc
 }  // namespace ana
